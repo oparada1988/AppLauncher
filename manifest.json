@@ -1,0 +1,20 @@
+{
+    "version": "0.1.0",
+    "thumbnail": "assets/thumbnail.png",
+    "id": "com_oparada_AppLauncher",
+    "name": "App Launcher",
+    "descriptions": {
+        "en_US": "Easily launch any installed host desktop application from your StreamController deck with automatic icon and label setup."
+    },
+    "short-descriptions": {
+        "en_US": "Launch host desktop apps"
+    },
+    "tags": [
+        "Utility",
+        "System"
+    ],
+    "minimum-version": "1.0.0",
+    "app-version": "1.0.0",
+    "description": "Easily launch any installed host desktop application from your StreamController deck with automatic icon and label setup.",
+    "short-description": "Launch host desktop apps"
+}
