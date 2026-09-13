@@ -67,18 +67,21 @@ class LaunchAppAction(ActionBase):
         else:
             self.set_label("", position="bottom")
 
-    def event_callback(self, event, data):
-        # Trigger on key press or touchscreen tap
-        if event in [Input.Key.Events.DOWN, Input.Touchscreen.Events.TAP]:
+    def event_callback(self, event, data=None):
+        # Trigger on key down or dial press
+        if event == Input.Key.Events.DOWN:
+            self.launch_current_app()
+        elif hasattr(Input, "Dial") and hasattr(Input.Dial, "Events") and event in [Input.Dial.Events.DOWN, Input.Dial.Events.SHORT_TOUCH_PRESS]:
             self.launch_current_app()
 
     def launch_current_app(self) -> None:
         settings = self.get_settings()
         desktop_id = settings.get("desktop_id", "")
         if not desktop_id:
-            logger.warning("No application selected for this key")
+            logger.warning("AppLauncher: No application selected for this key")
             return
 
+        logger.info(f"AppLauncher: Key pressed, launching application: {desktop_id}")
         if hasattr(self.plugin_base, "app_scanner"):
             self.plugin_base.app_scanner.launch(desktop_id)
 

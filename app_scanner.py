@@ -370,21 +370,17 @@ if found:
 
         logger.info(f"AppLauncher: Launching application with command: {cmd}")
 
-        def _spawn():
-            try:
-                subprocess.Popen(
-                    cmd,
-                    shell=True,
-                    start_new_session=True,
-                    stdin=subprocess.DEVNULL,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    cwd=home_dir
-                )
-            except Exception as e:
-                logger.error(f"Failed to spawn {cmd}: {e}")
-
-        p = multiprocessing.Process(target=_spawn)
-        p.daemon = True
-        p.start()
-        return True
+        try:
+            subprocess.Popen(
+                cmd,
+                shell=True,
+                start_new_session=True,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                cwd=home_dir
+            )
+            return True
+        except Exception as e:
+            logger.error(f"AppLauncher: Failed to spawn {cmd}: {e}")
+            return False
