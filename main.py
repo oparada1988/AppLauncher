@@ -72,6 +72,8 @@ class PluginTemplate(PluginBase):
 
     def get_apps(self) -> dict:
         """Returns the dictionary of scanned applications, scanning if needed."""
+        if hasattr(self, "_scan_thread") and self._scan_thread.is_alive():
+            self._scan_thread.join(timeout=5.0)
         if not self._apps_cache:
             self._apps_cache = self.app_scanner.scan_applications()
         return self._apps_cache

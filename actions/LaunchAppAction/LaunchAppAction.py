@@ -17,6 +17,7 @@ class LaunchAppAction(ActionBase):
         super().__init__(*args, **kwargs)
         self.has_configuration = True
         self._sorted_apps = []
+        self._apps_by_title = {}
         self._updating_config = False
 
     def on_ready(self) -> None:
@@ -86,20 +87,24 @@ class LaunchAppAction(ActionBase):
         settings = self.get_settings()
         current_desktop_id = settings.get("desktop_id", "")
 
-        # Fetch and sort apps alphabetically
+        # Fetch apps from plugin base
         apps_dict = self.plugin_base.get_apps()
         self._sorted_apps = sorted(apps_dict.values(), key=lambda a: a.name.lower())
 
         # 1. Application Dropdown Selector
         self._app_model = Gtk.StringList()
+        self._apps_by_title = {}
         selected_idx = 0
 
-        # Optional first item for "None"
+        # Placeholder first item
         self._app_model.append("-- Select an Application --")
 
         for idx, app in enumerate(self._sorted_apps, start=1):
-            # Display name with categories/comment if helpful
-            self._app_model.append(app.name)
+            title = app.name
+            if title in self._apps_by_title:
+                title = f"{app.name} ({app.desktop_id})"
+            self._apps_by_title[title] = app
+            self._app_model.append(title)
             if app.desktop_id == current_desktop_id:
                 selected_idx = idx
 
@@ -108,6 +113,10 @@ class LaunchAppAction(ActionBase):
             subtitle="Choose an installed application to launch",
             model=self._app_model
         )
+
+        # Enable text filtering and search expression for Adw.ComboRow
+        expression = Gtk.PropertyExpression.new(Gtk.StringObject, None, "string")
+        self._app_combo.set_expression(expression)
         if hasattr(self._app_combo, "set_enable_search"):
             self._app_combo.set_enable_search(True)
 
@@ -149,10 +158,14 @@ class LaunchAppAction(ActionBase):
         if self._updating_config:
             return
 
-        selected_idx = combo.get_selected()
+        selected_item = combo.get_selected_item()
+        if not selected_item:
+            return
+
+        selected_title = selected_item.get_string()
         settings = self.get_settings()
 
-        if selected_idx <= 0 or selected_idx > len(self._sorted_apps):
+        if not selected_title or selected_title == "-- Select an Application --":
             settings["desktop_id"] = ""
             settings["app_name"] = ""
             settings["icon_name"] = ""
@@ -161,7 +174,15 @@ class LaunchAppAction(ActionBase):
             self.update_key_visuals()
             return
 
-        selected_app = self._sorted_apps[selected_idx - 1]
+        selected_app = self._apps_by_title.get(selected_title)
+        if not selected_app:
+            idx = combo.get_selected()
+            if 0 < idx <= len(self._sorted_apps):
+                selected_app = self._sorted_apps[idx - 1]
+
+        if not selected_app:
+            return
+
         settings["desktop_id"] = selected_app.desktop_id
         settings["app_name"] = selected_app.name
         settings["icon_name"] = selected_app.icon_name
@@ -195,14 +216,22 @@ class LaunchAppAction(ActionBase):
             new_model = Gtk.StringList()
             new_model.append("-- Select an Application --")
 
+            self._apps_by_title = {}
             current_desktop_id = self.get_settings().get("desktop_id", "")
             selected_idx = 0
+
             for idx, app in enumerate(self._sorted_apps, start=1):
-                new_model.append(app.name)
+                title = app.name
+                if title in self._apps_by_title:
+                    title = f"{app.name} ({app.desktop_id})"
+                self._apps_by_title[title] = app
+                new_model.append(title)
                 if app.desktop_id == current_desktop_id:
                     selected_idx = idx
 
             self._app_combo.set_model(new_model)
+            expression = Gtk.PropertyExpression.new(Gtk.StringObject, None, "string")
+            self._app_combo.set_expression(expression)
             self._app_combo.set_selected(selected_idx)
         finally:
             self._updating_config = False

@@ -20,7 +20,7 @@ except Exception:
 
 
 def is_in_flatpak() -> bool:
-    return os.path.isfile('/.flatpak-info')
+    return os.path.isfile('/.flatpak-info') or os.environ.get('FLATPAK_ID') is not None
 
 
 class AppInfo:
@@ -152,12 +152,21 @@ for d in dirs:
 
 print(json.dumps(apps))
 """
+        home_dir = os.path.expanduser("~")
         try:
             res = subprocess.run(
-                ["flatpak-spawn", "--host", "python3", "-c", scanner_code],
+                [
+                    "flatpak-spawn",
+                    "--host",
+                    f"--directory={home_dir}",
+                    "python3",
+                    "-c",
+                    scanner_code
+                ],
                 capture_output=True,
                 text=True,
-                timeout=10
+                cwd=home_dir,
+                timeout=15
             )
             if res.returncode == 0 and res.stdout.strip():
                 data = json.loads(res.stdout.strip())
@@ -171,11 +180,15 @@ print(json.dumps(apps))
                         comment=item.get("comment", ""),
                         desktop_path=item.get("desktop_path", "")
                     )
+                logger.info(f"AppLauncher: Scanned {len(apps)} applications via flatpak-spawn on host")
                 return apps
+            else:
+                logger.error(f"AppLauncher: flatpak-spawn error (rc={res.returncode}): {res.stderr}")
         except Exception as e:
             logger.error(f"Error scanning apps via flatpak-spawn: {e}")
 
         # Fallback to whatever is accessible inside sandbox
+        logger.warning("AppLauncher: Falling back to sandbox-local desktop scan")
         return self._scan_local_host()
 
     def _parse_desktop_directories(self, dirs: List[str]) -> Dict[str, AppInfo]:
@@ -312,11 +325,20 @@ if found:
     shutil.copyfile(found, dst)
     print(dst)
 """
+        home_dir = os.path.expanduser("~")
         try:
             res = subprocess.run(
-                ["flatpak-spawn", "--host", "python3", "-c", copy_script],
+                [
+                    "flatpak-spawn",
+                    "--host",
+                    f"--directory={home_dir}",
+                    "python3",
+                    "-c",
+                    copy_script
+                ],
                 capture_output=True,
                 text=True,
+                cwd=home_dir,
                 timeout=5
             )
             if res.returncode == 0 and res.stdout.strip():
@@ -338,13 +360,15 @@ if found:
 
         # Clean desktop_id for gtk-launch (e.g. 'code.desktop' -> 'code')
         clean_id = desktop_id[:-8] if desktop_id.endswith(".desktop") else desktop_id
+        home_dir = os.path.expanduser("~")
 
         # Command to run on host
-        cmd = f"gtk-launch {shlex.quote(clean_id)}"
         if is_in_flatpak():
-            cmd = f"flatpak-spawn --host {cmd}"
+            cmd = f"flatpak-spawn --host --directory={shlex.quote(home_dir)} gtk-launch {shlex.quote(clean_id)}"
+        else:
+            cmd = f"gtk-launch {shlex.quote(clean_id)}"
 
-        logger.info(f"Launching application: {cmd}")
+        logger.info(f"AppLauncher: Launching application with command: {cmd}")
 
         def _spawn():
             try:
@@ -355,7 +379,7 @@ if found:
                     stdin=subprocess.DEVNULL,
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
-                    cwd=os.path.expanduser("~")
+                    cwd=home_dir
                 )
             except Exception as e:
                 logger.error(f"Failed to spawn {cmd}: {e}")
