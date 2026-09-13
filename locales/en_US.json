@@ -1,0 +1,6 @@
+{
+    "app.name": "App Launcher",
+    "app.description": "Easily launch any installed host desktop application from your StreamController deck.",
+    "action.launch.name": "Launch App",
+    "action.launch.description": "Launch an installed desktop application"
+}

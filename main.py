@@ -48,6 +48,20 @@ class PluginTemplate(PluginBase):
         )
         self.add_action_holder(self.launch_app_action_holder)
 
+        # Register plugin with StreamController
+        self.register(
+            plugin_name="App Launcher",
+            github_repo="https://github.com/oparada1988/AppLauncher",
+            plugin_version="0.1.0",
+            app_version="1.0.0"
+        )
+
+    def get_selector_icon(self) -> Gtk.Widget:
+        icon_path = os.path.join(self.PATH, "assets", "action_launch.png")
+        if os.path.exists(icon_path):
+            return Gtk.Image(file=icon_path)
+        return Gtk.Image(icon_name="view-paged")
+
     def _initial_scan(self):
         try:
             self._apps_cache = self.app_scanner.scan_applications()
