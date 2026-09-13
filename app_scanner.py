@@ -349,24 +349,30 @@ if found:
             logger.debug(f"Host icon caching error: {e}")
         return None
 
-    def launch(self, desktop_id: str) -> bool:
+    def launch(self, desktop_id: str, desktop_path: str = "") -> bool:
         """
         Launches an application cleanly on the host via gtk-launch or gio launch.
+        Supports native system apps, Flatpaks, Snaps, and local desktop files.
         Never blocks the caller.
         """
         if not desktop_id:
-            logger.warning("Attempted to launch empty desktop_id")
+            logger.warning("AppLauncher: Attempted to launch empty desktop_id")
             return False
 
         # Clean desktop_id for gtk-launch (e.g. 'code.desktop' -> 'code')
         clean_id = desktop_id[:-8] if desktop_id.endswith(".desktop") else desktop_id
         home_dir = os.path.expanduser("~")
 
-        # Command to run on host
-        if is_in_flatpak():
-            cmd = f"flatpak-spawn --host --directory={shlex.quote(home_dir)} gtk-launch {shlex.quote(clean_id)}"
+        # Robust launch command: gtk-launch first, fallback to gio launch with full file path
+        if desktop_path:
+            inner_cmd = f"gtk-launch {shlex.quote(clean_id)} 2>/dev/null || gio launch {shlex.quote(desktop_path)}"
         else:
-            cmd = f"gtk-launch {shlex.quote(clean_id)}"
+            inner_cmd = f"gtk-launch {shlex.quote(clean_id)}"
+
+        if is_in_flatpak():
+            cmd = f"flatpak-spawn --host --directory={shlex.quote(home_dir)} sh -c {shlex.quote(inner_cmd)}"
+        else:
+            cmd = inner_cmd
 
         logger.info(f"AppLauncher: Launching application with command: {cmd}")
 

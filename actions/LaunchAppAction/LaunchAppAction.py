@@ -77,13 +77,14 @@ class LaunchAppAction(ActionBase):
     def launch_current_app(self) -> None:
         settings = self.get_settings()
         desktop_id = settings.get("desktop_id", "")
+        desktop_path = settings.get("desktop_path", "")
         if not desktop_id:
             logger.warning("AppLauncher: No application selected for this key")
             return
 
         logger.info(f"AppLauncher: Key pressed, launching application: {desktop_id}")
         if hasattr(self.plugin_base, "app_scanner"):
-            self.plugin_base.app_scanner.launch(desktop_id)
+            self.plugin_base.app_scanner.launch(desktop_id, desktop_path=desktop_path)
 
     def get_config_rows(self) -> list:
         rows = []
@@ -187,6 +188,7 @@ class LaunchAppAction(ActionBase):
             return
 
         settings["desktop_id"] = selected_app.desktop_id
+        settings["desktop_path"] = selected_app.desktop_path
         settings["app_name"] = selected_app.name
         settings["icon_name"] = selected_app.icon_name
 
