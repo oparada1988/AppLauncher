@@ -90,7 +90,10 @@ class AppScanner:
     def _scan_via_flatpak_spawn(self) -> Dict[str, AppInfo]:
         """Fast scan executed on the host via flatpak-spawn."""
         scanner_code = """
-import os, glob, json
+import os, glob, json, shutil
+
+cache_dir = os.path.expanduser('~/.cache/streamcontroller_apps/icons')
+os.makedirs(cache_dir, exist_ok=True)
 
 dirs = [
     os.path.expanduser('~/.local/share/applications'),
@@ -100,6 +103,69 @@ dirs = [
     '/usr/share/applications',
     '/var/lib/snapd/desktop/applications'
 ]
+
+def find_host_icon(icon_name):
+    if not icon_name:
+        return None
+    if os.path.isabs(icon_name) and os.path.isfile(icon_name):
+        return icon_name
+
+    clean_name = os.path.basename(icon_name) if os.path.isabs(icon_name) else icon_name
+
+    # 1. Flatpak app direct export & files dirs
+    for base in ['/var/lib/flatpak/app', os.path.expanduser('~/.local/share/flatpak/app')]:
+        d = os.path.join(base, clean_name, 'current/active')
+        if not os.path.isdir(d):
+            continue
+        for sub in ['export/share/icons', 'files/share/icons']:
+            sub_d = os.path.join(d, sub)
+            if not os.path.isdir(sub_d):
+                continue
+            for sz in ['scalable', '512x512', '256x256', '128x128', '64x64', '48x48']:
+                for ext in ['.svg', '.png']:
+                    m = glob.glob(os.path.join(sub_d, '**', sz, 'apps', f'{clean_name}{ext}'), recursive=True)
+                    if m:
+                        return m[0]
+            m = glob.glob(os.path.join(sub_d, '**', f'{clean_name}.*'), recursive=True)
+            non_sym = [x for x in m if 'symbolic' not in x]
+            if non_sym:
+                return non_sym[0]
+            if m:
+                return m[0]
+
+    # 2. Pixmaps
+    for p_dir in ['/usr/share/pixmaps', '/usr/local/share/pixmaps', os.path.expanduser('~/.local/share/pixmaps')]:
+        for ext in ['', '.png', '.svg', '.xpm']:
+            cand = os.path.join(p_dir, clean_name + ext)
+            if os.path.isfile(cand):
+                return cand
+
+    # 3. Hicolor icon dirs
+    for i_dir in [
+        '/usr/share/icons/hicolor',
+        os.path.expanduser('~/.local/share/icons/hicolor'),
+        '/var/lib/flatpak/exports/share/icons/hicolor',
+        os.path.expanduser('~/.local/share/flatpak/exports/share/icons/hicolor')
+    ]:
+        if not os.path.isdir(i_dir):
+            continue
+        for sz in ['scalable', '512x512', '256x256', '128x128', '64x64', '48x48']:
+            for ext in ['.svg', '.png']:
+                cand = os.path.join(i_dir, sz, 'apps', f'{clean_name}{ext}')
+                if os.path.isfile(cand):
+                    return cand
+
+    # 4. System theme icons (Papirus, Yaru, Adwaita)
+    for theme_dir in ['/usr/share/icons/Papirus', '/usr/share/icons/Yaru', '/usr/share/icons/Adwaita']:
+        if not os.path.isdir(theme_dir):
+            continue
+        for sz in ['128x128/apps', 'scalable/apps', '64x64/apps', '48x48/apps']:
+            for ext in ['.svg', '.png']:
+                cand = os.path.join(theme_dir, sz, f'{clean_name}{ext}')
+                if os.path.isfile(cand):
+                    return cand
+
+    return None
 
 apps = {}
 for d in dirs:
@@ -141,13 +207,37 @@ for d in dirs:
         except Exception:
             continue
         if app_type == 'Application' and not nodisplay and name:
+            resolved_icon = None
+            if icon:
+                clean_icon_name = os.path.basename(icon) if os.path.isabs(icon) else icon
+                # Check if already cached in ~/.cache
+                for ext in ['.svg', '.png', '.jpg', '.xpm', '']:
+                    cand_cached = os.path.join(cache_dir, f'{clean_icon_name}{ext}')
+                    if os.path.isfile(cand_cached):
+                        resolved_icon = cand_cached
+                        break
+                if not resolved_icon:
+                    src = find_host_icon(icon)
+                    if src and os.path.isfile(src):
+                        _, ext = os.path.splitext(src)
+                        if not ext:
+                            ext = '.png'
+                        dst = os.path.join(cache_dir, f'{clean_icon_name}{ext}')
+                        try:
+                            if not os.path.exists(dst):
+                                shutil.copyfile(src, dst)
+                            resolved_icon = dst
+                        except Exception:
+                            resolved_icon = src
+
             apps[desktop_id] = {
                 'desktop_id': desktop_id,
                 'name': name,
                 'icon': icon,
                 'categories': categories,
                 'comment': comment,
-                'desktop_path': f
+                'desktop_path': f,
+                'resolved_icon_path': resolved_icon
             }
 
 print(json.dumps(apps))
@@ -172,7 +262,7 @@ print(json.dumps(apps))
                 data = json.loads(res.stdout.strip())
                 apps = {}
                 for did, item in data.items():
-                    apps[did] = AppInfo(
+                    app = AppInfo(
                         desktop_id=item["desktop_id"],
                         name=item["name"],
                         icon_name=item.get("icon"),
@@ -180,6 +270,8 @@ print(json.dumps(apps))
                         comment=item.get("comment", ""),
                         desktop_path=item.get("desktop_path", "")
                     )
+                    app.resolved_icon_path = item.get("resolved_icon_path")
+                    apps[did] = app
                 logger.info(f"AppLauncher: Scanned {len(apps)} applications via flatpak-spawn on host")
                 return apps
             else:
@@ -254,28 +346,30 @@ print(json.dumps(apps))
         if os.path.isabs(icon_name_or_path) and os.path.exists(icon_name_or_path):
             return icon_name_or_path
 
-        # 2. Check Gtk.IconTheme (works inside flatpak mapped to /run/host/share/icons)
-        if self._icon_theme is not None:
+        clean_name = os.path.basename(icon_name_or_path) if os.path.isabs(icon_name_or_path) else icon_name_or_path
+
+        # 2. Check already cached icons in ~/.cache/streamcontroller_apps/icons
+        for ext in [".svg", ".png", ".jpg", ".xpm", ""]:
+            cached = os.path.join(self.cache_dir, f"{clean_name}{ext}")
+            if os.path.exists(cached) and os.path.isfile(cached):
+                return cached
+
+        # 3. Check Gtk.IconTheme (only if theme actually contains the icon)
+        if self._icon_theme is not None and self._icon_theme.has_icon(clean_name):
             try:
                 paintable = self._icon_theme.lookup_icon(
-                    icon_name_or_path, None, 128, 1, Gtk.TextDirection.NONE, 0
+                    clean_name, None, 128, 1, Gtk.TextDirection.NONE, 0
                 )
                 if paintable and paintable.get_file():
                     p = paintable.get_file().get_path()
-                    if p and os.path.exists(p):
+                    if p and os.path.exists(p) and "image-missing" not in p:
                         return p
             except Exception as e:
-                logger.debug(f"Gtk.IconTheme lookup error for {icon_name_or_path}: {e}")
+                logger.debug(f"Gtk.IconTheme lookup error for {clean_name}: {e}")
 
-        # 3. Check already cached icons
-        for ext in [".svg", ".png", ".jpg"]:
-            cached = os.path.join(self.cache_dir, f"{icon_name_or_path}{ext}")
-            if os.path.exists(cached):
-                return cached
-
-        # 4. If in flatpak, copy from host icon directories to cache if located
+        # 4. If in flatpak, search host icon directories and cache if located
         if is_in_flatpak():
-            cached_path = self._cache_icon_from_host(icon_name_or_path)
+            cached_path = self._cache_icon_from_host(clean_name)
             if cached_path and os.path.exists(cached_path):
                 return cached_path
 
@@ -290,39 +384,96 @@ icon_name = {json.dumps(icon_name)}
 cache_dir = os.path.expanduser('~/.cache/streamcontroller_apps/icons')
 os.makedirs(cache_dir, exist_ok=True)
 
-search_dirs = [
-    os.path.expanduser('~/.local/share/icons'),
-    os.path.expanduser('~/.local/share/flatpak/exports/share/icons'),
-    '/var/lib/flatpak/exports/share/icons',
-    '/usr/share/pixmaps',
-    '/usr/share/icons'
-]
+clean_name = os.path.basename(icon_name) if os.path.isabs(icon_name) else icon_name
 
+# 1. Flatpak app direct export & files dirs
 found = None
-# Check exact or ext
-for d in search_dirs:
-    for ext in ['', '.png', '.svg']:
-        cand = os.path.join(d, icon_name + ext)
-        if os.path.exists(cand):
-            found = cand
+for base in ['/var/lib/flatpak/app', os.path.expanduser('~/.local/share/flatpak/app')]:
+    d = os.path.join(base, clean_name, 'current/active')
+    if not os.path.isdir(d):
+        continue
+    for sub in ['export/share/icons', 'files/share/icons']:
+        sub_d = os.path.join(d, sub)
+        if not os.path.isdir(sub_d):
+            continue
+        for sz in ['scalable', '512x512', '256x256', '128x128', '64x64', '48x48']:
+            for ext in ['.svg', '.png']:
+                m = glob.glob(os.path.join(sub_d, '**', sz, 'apps', f'{{clean_name}}{{ext}}'), recursive=True)
+                if m:
+                    found = m[0]
+                    break
+            if found:
+                break
+        if not found:
+            m = glob.glob(os.path.join(sub_d, '**', f'{{clean_name}}.*'), recursive=True)
+            non_sym = [x for x in m if 'symbolic' not in x]
+            if non_sym:
+                found = non_sym[0]
+            elif m:
+                found = m[0]
+        if found:
             break
     if found:
         break
 
+# 2. Pixmaps
 if not found:
-    for d in search_dirs:
-        for sz in ['256x256', '128x128', '512x512', 'scalable', '64x64']:
-            matches = glob.glob(os.path.join(d, '**', sz, '**', icon_name + '.*'), recursive=True)
-            if matches:
-                found = matches[0]
+    for p_dir in ['/usr/share/pixmaps', '/usr/local/share/pixmaps', os.path.expanduser('~/.local/share/pixmaps')]:
+        for ext in ['', '.png', '.svg', '.xpm']:
+            cand = os.path.join(p_dir, clean_name + ext)
+            if os.path.isfile(cand):
+                found = cand
                 break
         if found:
             break
 
-if found:
+# 3. Hicolor icon dirs
+if not found:
+    for i_dir in [
+        '/usr/share/icons/hicolor',
+        os.path.expanduser('~/.local/share/icons/hicolor'),
+        '/var/lib/flatpak/exports/share/icons/hicolor',
+        os.path.expanduser('~/.local/share/flatpak/exports/share/icons/hicolor')
+    ]:
+        if not os.path.isdir(i_dir):
+            continue
+        for sz in ['scalable', '512x512', '256x256', '128x128', '64x64', '48x48']:
+            for ext in ['.svg', '.png']:
+                cand = os.path.join(i_dir, sz, 'apps', f'{{clean_name}}{{ext}}')
+                if os.path.isfile(cand):
+                    found = cand
+                    break
+            if found:
+                break
+        if found:
+            break
+
+# 4. System theme icons
+if not found:
+    for theme_dir in ['/usr/share/icons/Papirus', '/usr/share/icons/Yaru', '/usr/share/icons/Adwaita']:
+        if not os.path.isdir(theme_dir):
+            continue
+        for sz in ['128x128/apps', 'scalable/apps', '64x64/apps', '48x48/apps']:
+            for ext in ['.svg', '.png']:
+                cand = os.path.join(theme_dir, sz, f'{{clean_name}}{{ext}}')
+                if os.path.isfile(cand):
+                    found = cand
+                    break
+            if found:
+                break
+        if found:
+            break
+
+if found and os.path.isfile(found):
     _, ext = os.path.splitext(found)
-    dst = os.path.join(cache_dir, icon_name + ext)
-    shutil.copyfile(found, dst)
+    if not ext:
+        ext = '.png'
+    dst = os.path.join(cache_dir, f'{{clean_name}}{{ext}}')
+    if not os.path.exists(dst):
+        try:
+            shutil.copyfile(found, dst)
+        except Exception:
+            dst = found
     print(dst)
 """
         home_dir = os.path.expanduser("~")

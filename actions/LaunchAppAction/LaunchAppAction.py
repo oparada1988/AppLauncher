@@ -9,7 +9,28 @@ import gi
 
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
-from gi.repository import Gtk, Adw, GLib
+from gi.repository import Gtk, Adw, GLib, GObject, Pango, Gio
+
+
+class AppItem(GObject.Object):
+    __gtype_name__ = "AppLauncherItem"
+
+    title = GObject.Property(type=str, default="")
+    app_name = GObject.Property(type=str, default="")
+    desktop_id = GObject.Property(type=str, default="")
+    desktop_path = GObject.Property(type=str, default="")
+    icon_name = GObject.Property(type=str, default="")
+    icon_path = GObject.Property(type=str, default="")
+
+    def __init__(self, title: str = "", app_name: str = "", desktop_id: str = "",
+                 desktop_path: str = "", icon_name: str = "", icon_path: str = ""):
+        super().__init__()
+        self.title = title
+        self.app_name = app_name
+        self.desktop_id = desktop_id
+        self.desktop_path = desktop_path
+        self.icon_name = icon_name
+        self.icon_path = icon_path
 
 
 class LaunchAppAction(ActionBase):
@@ -86,6 +107,69 @@ class LaunchAppAction(ActionBase):
         if hasattr(self.plugin_base, "app_scanner"):
             self.plugin_base.app_scanner.launch(desktop_id, desktop_path=desktop_path)
 
+    def _setup_combo_item(self, factory, list_item):
+        box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+        box.set_valign(Gtk.Align.CENTER)
+
+        image = Gtk.Image()
+        image.set_pixel_size(24)
+        image.set_valign(Gtk.Align.CENTER)
+
+        label = Gtk.Label(xalign=0)
+        label.set_ellipsize(Pango.EllipsizeMode.END)
+        label.set_valign(Gtk.Align.CENTER)
+
+        box.append(image)
+        box.append(label)
+        list_item.set_child(box)
+
+    def _bind_combo_item(self, factory, list_item):
+        box = list_item.get_child()
+        if not box:
+            return
+        image = box.get_first_child()
+        label = image.get_next_sibling()
+        item = list_item.get_item()
+        if not item:
+            return
+
+        label.set_text(item.title)
+
+        if not item.desktop_id:
+            # Placeholder item "-- Select an Application --"
+            image.set_visible(False)
+        elif item.icon_path and os.path.exists(item.icon_path):
+            try:
+                image.set_from_file(item.icon_path)
+                image.set_visible(True)
+            except Exception:
+                self._fallback_icon(image, item)
+        elif item.icon_name:
+            self._fallback_icon(image, item)
+        else:
+            image.set_visible(False)
+
+    def _fallback_icon(self, image: Gtk.Image, item: AppItem):
+        if item.icon_name:
+            try:
+                image.set_from_icon_name(item.icon_name)
+                image.set_visible(True)
+                return
+            except Exception:
+                pass
+
+        default_icon = os.path.join(self.plugin_base.PATH, "assets", "default_app.png")
+        if os.path.exists(default_icon):
+            try:
+                image.set_from_file(default_icon)
+                image.set_visible(True)
+                return
+            except Exception:
+                pass
+
+        image.set_from_icon_name("application-x-executable-symbolic")
+        image.set_visible(True)
+
     def get_config_rows(self) -> list:
         rows = []
         settings = self.get_settings()
@@ -95,31 +179,51 @@ class LaunchAppAction(ActionBase):
         apps_dict = self.plugin_base.get_apps()
         self._sorted_apps = sorted(apps_dict.values(), key=lambda a: a.name.lower())
 
-        # 1. Application Dropdown Selector
-        self._app_model = Gtk.StringList()
+        # 1. Application Dropdown Selector with Application Icons
+        self._app_store = Gio.ListStore.new(AppItem)
         self._apps_by_title = {}
         selected_idx = 0
 
         # Placeholder first item
-        self._app_model.append("-- Select an Application --")
+        self._app_store.append(AppItem(title="-- Select an Application --", desktop_id=""))
 
         for idx, app in enumerate(self._sorted_apps, start=1):
             title = app.name
             if title in self._apps_by_title:
                 title = f"{app.name} ({app.desktop_id})"
             self._apps_by_title[title] = app
-            self._app_model.append(title)
+
+            icon_path = app.resolved_icon_path
+            if not icon_path and hasattr(self.plugin_base, "app_scanner"):
+                icon_path = self.plugin_base.app_scanner.resolve_icon(app.icon_name)
+                app.resolved_icon_path = icon_path
+
+            item = AppItem(
+                title=title,
+                app_name=app.name,
+                desktop_id=app.desktop_id,
+                desktop_path=app.desktop_path,
+                icon_name=app.icon_name,
+                icon_path=icon_path or ""
+            )
+            self._app_store.append(item)
             if app.desktop_id == current_desktop_id:
                 selected_idx = idx
+
+        factory = Gtk.SignalListItemFactory()
+        factory.connect("setup", self._setup_combo_item)
+        factory.connect("bind", self._bind_combo_item)
 
         self._app_combo = Adw.ComboRow(
             title="Application",
             subtitle="Choose an installed application to launch",
-            model=self._app_model
+            model=self._app_store
         )
+        self._app_combo.set_factory(factory)
+        self._app_combo.set_list_factory(factory)
 
         # Enable text filtering and search expression for Adw.ComboRow
-        expression = Gtk.PropertyExpression.new(Gtk.StringObject, None, "string")
+        expression = Gtk.PropertyExpression.new(AppItem, None, "title")
         self._app_combo.set_expression(expression)
         if hasattr(self._app_combo, "set_enable_search"):
             self._app_combo.set_enable_search(True)
@@ -166,11 +270,11 @@ class LaunchAppAction(ActionBase):
         if not selected_item:
             return
 
-        selected_title = selected_item.get_string()
         settings = self.get_settings()
 
-        if not selected_title or selected_title == "-- Select an Application --":
+        if not selected_item.desktop_id:
             settings["desktop_id"] = ""
+            settings["desktop_path"] = ""
             settings["app_name"] = ""
             settings["icon_name"] = ""
             settings["icon_path"] = ""
@@ -178,22 +282,14 @@ class LaunchAppAction(ActionBase):
             self.update_key_visuals()
             return
 
-        selected_app = self._apps_by_title.get(selected_title)
-        if not selected_app:
-            idx = combo.get_selected()
-            if 0 < idx <= len(self._sorted_apps):
-                selected_app = self._sorted_apps[idx - 1]
+        settings["desktop_id"] = selected_item.desktop_id
+        settings["desktop_path"] = selected_item.desktop_path
+        settings["app_name"] = selected_item.app_name or selected_item.title
+        settings["icon_name"] = selected_item.icon_name
 
-        if not selected_app:
-            return
-
-        settings["desktop_id"] = selected_app.desktop_id
-        settings["desktop_path"] = selected_app.desktop_path
-        settings["app_name"] = selected_app.name
-        settings["icon_name"] = selected_app.icon_name
-
-        # Resolve icon
-        icon_path = self.plugin_base.app_scanner.resolve_icon(selected_app.icon_name)
+        icon_path = selected_item.icon_path
+        if not icon_path and hasattr(self.plugin_base, "app_scanner"):
+            icon_path = self.plugin_base.app_scanner.resolve_icon(selected_item.icon_name)
         settings["icon_path"] = icon_path
 
         self.set_settings(settings)
@@ -218,8 +314,8 @@ class LaunchAppAction(ActionBase):
             self._sorted_apps = sorted(apps_dict.values(), key=lambda a: a.name.lower())
 
             # Rebuild model
-            new_model = Gtk.StringList()
-            new_model.append("-- Select an Application --")
+            new_store = Gio.ListStore.new(AppItem)
+            new_store.append(AppItem(title="-- Select an Application --", desktop_id=""))
 
             self._apps_by_title = {}
             current_desktop_id = self.get_settings().get("desktop_id", "")
@@ -230,12 +326,27 @@ class LaunchAppAction(ActionBase):
                 if title in self._apps_by_title:
                     title = f"{app.name} ({app.desktop_id})"
                 self._apps_by_title[title] = app
-                new_model.append(title)
+
+                icon_path = app.resolved_icon_path
+                if not icon_path and hasattr(self.plugin_base, "app_scanner"):
+                    icon_path = self.plugin_base.app_scanner.resolve_icon(app.icon_name)
+                    app.resolved_icon_path = icon_path
+
+                item = AppItem(
+                    title=title,
+                    app_name=app.name,
+                    desktop_id=app.desktop_id,
+                    desktop_path=app.desktop_path,
+                    icon_name=app.icon_name,
+                    icon_path=icon_path or ""
+                )
+                new_store.append(item)
                 if app.desktop_id == current_desktop_id:
                     selected_idx = idx
 
-            self._app_combo.set_model(new_model)
-            expression = Gtk.PropertyExpression.new(Gtk.StringObject, None, "string")
+            self._app_store = new_store
+            self._app_combo.set_model(self._app_store)
+            expression = Gtk.PropertyExpression.new(AppItem, None, "title")
             self._app_combo.set_expression(expression)
             self._app_combo.set_selected(selected_idx)
         finally:

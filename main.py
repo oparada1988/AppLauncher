@@ -67,6 +67,10 @@ class PluginTemplate(PluginBase):
             self._apps_cache = self.app_scanner.scan_applications()
             self._initial_scan_done = True
             logger.info(f"AppLauncher: Loaded {len(self._apps_cache)} installed applications")
+            # Pre-resolve icons in background thread so UI rendering is instantaneous
+            for app in self._apps_cache.values():
+                if not app.resolved_icon_path:
+                    app.resolved_icon_path = self.app_scanner.resolve_icon(app.icon_name)
         except Exception as e:
             logger.error(f"AppLauncher initial scan failed: {e}")
 
@@ -81,4 +85,7 @@ class PluginTemplate(PluginBase):
     def scan_apps(self) -> dict:
         """Forces a fresh scan of installed applications."""
         self._apps_cache = self.app_scanner.scan_applications()
+        for app in self._apps_cache.values():
+            if not app.resolved_icon_path:
+                app.resolved_icon_path = self.app_scanner.resolve_icon(app.icon_name)
         return self._apps_cache
